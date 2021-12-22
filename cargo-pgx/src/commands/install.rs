@@ -38,14 +38,26 @@ pub(crate) fn install_extension(
         let mut dest = base_directory.clone();
         dest.push(&extdir);
         dest.push(&control_file);
-        copy_file(control_file, dest, "control file");
+        copy_file(&control_file, &dest, "control file", true);
     }
 
     {
         let mut dest = base_directory.clone();
         dest.push(&pkgdir);
         dest.push(format!("{}.so", extname));
-        copy_file(shlibpath, dest, "shared library");
+
+        if cfg!(target_os = "macos") {
+            // Remove the existing .so if present. This is a workaround for an
+            // issue highlighted by the following apple documentation:
+            // https://developer.apple.com/documentation/security/updating_mac_software
+            if dest.exists() {
+                handle_result!(
+                std::fs::remove_file(&dest),
+                format!("unable to remove existing file {}", dest.display())
+            )
+            }
+        }
+        copy_file(&shlibpath, &dest, "shared library", false);
     }
 
     if !no_schema || !get_target_sql_file(&extdir, &base_directory).exists() {
@@ -64,7 +76,7 @@ pub(crate) fn install_extension(
     Ok(())
 }
 
-fn copy_file(src: PathBuf, dest: PathBuf, msg: &str) {
+fn copy_file(src: &PathBuf, dest: &PathBuf, msg: &str, do_filter: bool) {
     if !dest.parent().unwrap().exists() {
         handle_result!(
             std::fs::create_dir_all(dest.parent().unwrap()),
@@ -82,10 +94,24 @@ fn copy_file(src: PathBuf, dest: PathBuf, msg: &str) {
         format_display_path(&dest)
     );
 
-    handle_result!(
-        std::fs::copy(&src, &dest),
-        format!("failed copying `{}` to `{}`", src.display(), dest.display())
-    );
+    if do_filter {
+        // we want to filter the contents of the file we're to copy
+        let input = handle_result!(
+            std::fs::read_to_string(&src),
+            format!("failed to read `{}`", src.display())
+        );
+        let input = filter_contents(input);
+
+        handle_result!(
+            std::fs::write(&dest, &input),
+            format!("failed writing `{}` to `{}`", src.display(), dest.display())
+        );
+    } else {
+        handle_result!(
+            std::fs::copy(&src, &dest),
+            format!("failed copying `{}` to `{}`", src.display(), dest.display())
+        );
+    }
 }
 
 pub(crate) fn build_extension(major_version: u16, is_release: bool, additional_features: &[&str]) {
@@ -159,10 +185,9 @@ fn copy_sql_files(
         None,
         false,
         true,
+        true,
     )?;
-    let written = std::fs::read_to_string(&dest).unwrap();
-    let written = filter_contents(written);
-    std::fs::write(&dest, written).unwrap();
+    copy_file(&dest, &dest, "extension schema file", true);
 
     // now copy all the version upgrade files too
     if let Ok(dir) = std::fs::read_dir("sql/") {
@@ -175,7 +200,7 @@ fn copy_sql_files(
                     dest.push(extdir);
                     dest.push(filename);
 
-                    copy_file(sql.path(), dest, "extension schema file");
+                    copy_file(&sql.path(), &dest, "extension schema upgrade file", true);
                 }
             }
         }
