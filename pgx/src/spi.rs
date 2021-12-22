@@ -5,7 +5,7 @@
 
 use crate::{pg_sys, FromDatum, IntoDatum, Json, PgMemoryContexts, PgOid};
 use enum_primitive_derive::*;
-use make_tuple_traits::mark_tuples;
+use mark_tuple_traits::mark_tuples;
 use num_traits::FromPrimitive;
 use std::collections::HashMap;
 use std::fmt::Debug;
