@@ -6,6 +6,7 @@
 mod tests {
     #[allow(unused_imports)]
     use crate as pgx_tests;
+    use pgx::spi::{hlist_pat, HList};
 
     use pgx::*;
 
@@ -72,7 +73,7 @@ mod tests {
     }
 
     #[pg_test]
-    fn test_get_tuple() {
+    fn test_get_hlist() {
         Spi::execute(|client| {
             let res = client
                 .select(
@@ -82,8 +83,8 @@ mod tests {
                 )
                 .next()
                 .expect("Should be at least one entry but none returned!")
-                .get_tuple::<(i64, String, bool, i32, f32)>();
-            let (opt_i64, opt_string, opt_bool, opt_i32, opt_f32) = res;
+                .get_hlist::<HList!(i64, String, bool, i32, f32)>();
+            let hlist_pat!(opt_i64, opt_string, opt_bool, opt_i32, opt_f32) = res;
             assert_eq!(
                 (opt_i64, opt_string, opt_bool, opt_i32),
                 (Some(42), Some(String::from("hello")), None, Some(23))

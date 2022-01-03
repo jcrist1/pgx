@@ -5,12 +5,13 @@
 
 use crate::{pg_sys, FromDatum, IntoDatum, Json, PgMemoryContexts, PgOid};
 use enum_primitive_derive::*;
-use mark_tuple_traits::mark_tuples;
+use frunk::HNil;
+pub use frunk::{hlist, HList, hlist_pat};
+use frunk::{hlist::HList, HCons};
 use num_traits::FromPrimitive;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::ops::{Index, IndexMut};
-use tuple_tricks::{NestTuple, PreviousTuple, UnnestTuple};
 
 #[derive(Debug, Primitive)]
 pub enum SpiOk {
@@ -462,46 +463,44 @@ impl SpiTupleTable {
     }
 }
 
-/// This adds generic typed tuple deserialisation for SpiHeapTupleData. First we implement a custom
-/// marker trait so we can safely derive the new trait for arbitrary tuples.
-mark_tuples!(Marked);
-
 /// Here we define the new trait, which has the type representing the tuple of options that we get
 /// from the spi heap tuple data, and a method for extracting such a tuple of options from the spi
 /// heap tuple data.
-pub trait TupleDatum {
-    type OptionedTuple;
-    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> (Self::OptionedTuple, usize);
+pub trait HListDatum {
+    type OptionedHList;
+    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> (Self::OptionedHList, usize);
 }
 
 /// We implement the trait inductively, so must start with a single tuple
-impl<A: FromDatum> TupleDatum for (A,) {
-    type OptionedTuple = (Option<A>,);
-    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> ((Option<A>,), usize) {
+impl<A: FromDatum> HListDatum for HCons<A, HNil> {
+    type OptionedHList = HCons<Option<A>, HNil>;
+    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> (HCons<Option<A>, HNil>, usize) {
         let opt_a = spi_heap_tuple_data
             .by_ordinal(1)
             .expect("Unable to get element 1 of heap tuple data")
             .value::<A>();
-        ((opt_a,), 1)
+        (
+            HCons {
+                head: opt_a,
+                tail: HNil,
+            },
+            1,
+        )
     }
 }
 
 /// and here we apply the "inductive hypothesis" i.e. if we can implement this for a given tuple,
 /// then we can implement it for a tuple with one more element
-impl<T, PrevTuple, Head, PrevOptionedTuple, PrevOptionedTupleNested> TupleDatum for T
+impl<PrevHList, Head, PrevOptionedHList> HListDatum for HCons<Head, PrevHList>
 where
-    T: Marked + PreviousTuple<TailTuple = PrevTuple, Head = Head>,
     Head: FromDatum,
-    PrevTuple: TupleDatum<OptionedTuple = PrevOptionedTuple>,
-    PrevOptionedTuple: NestTuple<Nested = PrevOptionedTupleNested>,
-    (PrevOptionedTupleNested, Option<Head>): UnnestTuple,
+    PrevHList: HListDatum<OptionedHList = PrevOptionedHList>,
 {
-    type OptionedTuple = <(PrevOptionedTupleNested, Option<Head>) as UnnestTuple>::Unnested;
-    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> (Self::OptionedTuple, usize) {
+    type OptionedHList = HCons<Option<Head>, PrevOptionedHList>;
+    fn get_tuple(spi_heap_tuple_data: &SpiHeapTupleData) -> (Self::OptionedHList, usize) {
         let (prev_optioned_tupled, last_index) =
-            <PrevTuple as TupleDatum>::get_tuple(spi_heap_tuple_data);
+            <PrevHList as HListDatum>::get_tuple(spi_heap_tuple_data);
         let new_index = last_index + 1;
-        let prev_optioned_tupled_nested = prev_optioned_tupled.nest();
         let new_datum = spi_heap_tuple_data
             .by_ordinal(new_index)
             .expect(&format!(
@@ -509,7 +508,10 @@ where
                 new_index
             ))
             .value::<Head>();
-        let unnested_new = (prev_optioned_tupled_nested, new_datum).unnest();
+        let unnested_new = HCons {
+            head: new_datum,
+            tail: prev_optioned_tupled,
+        };
         (unnested_new, new_index)
     }
 }
@@ -657,9 +659,11 @@ impl SpiHeapTupleData {
     /// Get a tuple of options by specifying a tuple of inner types
     /// If the type cannot be cast then returns None. If there aren't enough entries, then it will
     /// fail
-    pub fn get_tuple<T: TupleDatum>(&self) -> <T as TupleDatum>::OptionedTuple {
-        let (tuple, _) = <T as TupleDatum>::get_tuple(self);
-        tuple
+    pub fn get_hlist<HListTupleDatum: HListDatum>(
+        &self,
+    ) -> <HListTupleDatum as HListDatum>::OptionedHList {
+        let (option_hlist, _) = HListTupleDatum::get_tuple(self);
+        option_hlist
     }
 }
 
